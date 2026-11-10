@@ -1,2 +1,6 @@
 node_modules/
 .env
+bot_is_running.txt
+dist/
+pending_jobs.json
+src/threads.json
