@@ -4,6 +4,7 @@ import axios from 'axios';
 import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
+import * as http from 'http';
 import sqlite3 from 'sqlite3';
 import { open } from 'sqlite';
 import { fileURLToPath } from 'url';
@@ -40,7 +41,40 @@ function saveSettings(settings) {
     }
 }
 let settings = loadSettings();
-// ---------------------------
+// --- Notification Helpers ---
+const REMINDER_CHANNEL_ID = process.env.REMINDER_CHANNEL_ID || '1568710925392023652';
+async function sendSessionNotification(sessionId) {
+    try {
+        const settings = loadSettings();
+        if (!settings.notificationsEnabled)
+            return;
+        const dbPath = path.join(process.env.HERMES_HOME || path.join(os.homedir(), '.hermes'), 'state.db');
+        if (!fs.existsSync(dbPath))
+            return;
+        const db = await open({
+            filename: dbPath,
+            driver: sqlite3.Database,
+        });
+        const session = await db.get(`SELECT title FROM sessions WHERE id = ?`, [sessionId]);
+        await db.close();
+        if (!session)
+            return;
+        const channel = await client.channels.fetch(REMINDER_CHANNEL_ID);
+        if (!channel || !channel.isTextBased())
+            return;
+        const title = session.title || `Untitled session #${sessionId}`;
+        const embed = new EmbedBuilder()
+            .setTitle('🔔 Session complete')
+            .setDescription(`**Title:** ${title}`)
+            .setColor(0x00ff00);
+        const textChannel = channel;
+        await textChannel.send({ embeds: [embed] });
+        console.log(`✅ Session notification sent: ${title}`);
+    }
+    catch (err) {
+        console.error('Error sending session notification:', err);
+    }
+}
 const LOCAL_AI_ENDPOINT = process.env.LOCAL_AI_ENDPOINT;
 const LOCAL_AI_MODEL = process.env.LOCAL_AI_MODEL;
 if (!LOCAL_AI_ENDPOINT || !LOCAL_AI_MODEL) {
@@ -348,8 +382,9 @@ client.on('messageCreate', async (message) => {
         // Don't reply — the user may have just been chatting, and the bot responding anyway is enough
     }
 });
-// Handle graceful shutdown: remove running file and update channel
+// Handle graceful shutdown: remove running file, update channel, stop webhook server
 const cleanup = () => {
+    server.close();
     try {
         if (fs.existsSync(RUNNING_FILE)) {
             fs.unlinkSync(RUNNING_FILE);
@@ -362,4 +397,38 @@ const cleanup = () => {
 };
 process.on('SIGINT', cleanup);
 process.on('SIGTERM', cleanup);
+// --- Session-end HTTP endpoint (called by Hermes outbound webhook) ---
+const WEBHOOK_PORT = parseInt(process.env.WEBHOOK_PORT || '3001', 10);
+const server = http.createServer(async (req, res) => {
+    if (req.method === 'POST' && req.url === '/session-end') {
+        let body = '';
+        req.on('data', (chunk) => { body += chunk; });
+        req.on('end', async () => {
+            try {
+                const payload = JSON.parse(body);
+                const sessionId = payload.session_id;
+                if (!sessionId) {
+                    res.writeHead(400, { 'Content-Type': 'application/json' });
+                    res.end(JSON.stringify({ error: 'Missing session_id' }));
+                    return;
+                }
+                console.log(`📩 Session-end webhook received: ${sessionId}`);
+                await sendSessionNotification(sessionId);
+                res.writeHead(200, { 'Content-Type': 'application/json' });
+                res.end(JSON.stringify({ status: 'ok' }));
+            }
+            catch (err) {
+                console.error('Error processing webhook:', err);
+                res.writeHead(400, { 'Content-Type': 'application/json' });
+                res.end(JSON.stringify({ error: 'Bad request' }));
+            }
+        });
+        return;
+    }
+    res.writeHead(404);
+    res.end();
+});
+server.listen(WEBHOOK_PORT, () => {
+    console.log(`📡 Webhook listener on port ${WEBHOOK_PORT}`);
+});
 client.login(DISCORD_TOKEN);

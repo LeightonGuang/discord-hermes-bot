@@ -2,6 +2,9 @@ import { Client, GatewayIntentBits, ChannelType } from 'discord.js';
 import 'dotenv/config';
 import fs from 'fs/promises';
 import path from 'path';
+import os from 'os';
+import sqlite3 from 'sqlite3';
+import { open } from 'sqlite';
 import { fileURLToPath } from 'url';
 import { fetchAndRankJobs } from './jobService.js';
 const __filename = fileURLToPath(import.meta.url);
@@ -11,6 +14,8 @@ const PENDING_JOBS_FILE = path.join(BOT_ROOT, 'pending_jobs.json');
 const RUNNING_FILE = path.join(BOT_ROOT, 'bot_is_running.txt');
 const STATUS_CHANNEL_ID = process.env.STATUS_CHANNEL_ID || '1569163794628739123';
 const NOTIFICATION_CHANNEL_ID = process.env.NOTIFICATION_CHANNEL_ID || '1569355374845235344';
+const REMINDER_CHANNEL_ID = process.env.REMINDER_CHANNEL_ID || '1568710925392023652';
+const HERMES_DB_PATH = path.join(os.homedir(), '.hermes', 'state.db');
 async function setChannelName(client, channelId, name) {
     try {
         const channel = await client.channels.fetch(channelId);
@@ -20,6 +25,21 @@ async function setChannelName(client, channelId, name) {
     }
     catch (err) {
         console.error(`Failed to update channel ${channelId}:`, err);
+    }
+}
+async function getLastSessionTitle() {
+    try {
+        const db = await open({
+            filename: HERMES_DB_PATH,
+            driver: sqlite3.Database,
+        });
+        const row = await db.get(`SELECT title FROM sessions WHERE archived = 0 AND ended_at IS NOT NULL ORDER BY last_activity_at DESC LIMIT 1`);
+        await db.close();
+        return row?.title || null;
+    }
+    catch (err) {
+        console.error('Error reading Hermes session title:', err);
+        return null;
     }
 }
 async function run() {
@@ -137,6 +157,26 @@ async function run() {
             console.log(`✅ Sent ${chunks.length} message(s) to Discord.`);
             await fs.unlink(PENDING_JOBS_FILE);
             console.log('🧹 Cleaned up pending_jobs.json');
+            // Send session title to reminders channel if notifications are on
+            if (notificationsEnabled) {
+                try {
+                    const sessionTitle = await getLastSessionTitle();
+                    const reminderMsg = sessionTitle
+                        ? `🔔 **Session complete**\n\n**Title:** ${sessionTitle}`
+                        : `🔔 **Job messenger session complete**`;
+                    const reminderChannel = await client.channels.fetch(REMINDER_CHANNEL_ID);
+                    if (reminderChannel) {
+                        await reminderChannel.send(reminderMsg);
+                        console.log('✅ Reminder sent to Discord.');
+                    }
+                    else {
+                        console.log('⚠️ Reminder channel not found, skipping reminder.');
+                    }
+                }
+                catch (err) {
+                    console.error('❌ Error sending reminder:', err);
+                }
+            }
             // Reset status back to online
             await setChannelName(client, STATUS_CHANNEL_ID, '🟢 Hermes status: online');
             await fs.unlink(RUNNING_FILE).catch(() => { });

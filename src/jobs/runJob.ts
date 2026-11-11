@@ -2,6 +2,9 @@ import { Client, GatewayIntentBits, TextChannel, ChannelType } from 'discord.js'
 import 'dotenv/config';
 import fs from 'fs/promises';
 import path from 'path';
+import os from 'os';
+import sqlite3 from 'sqlite3';
+import { open } from 'sqlite';
 import { fileURLToPath } from 'url';
 import { fetchAndRankJobs, type Job } from './jobService.js';
 
@@ -10,8 +13,10 @@ const __dirname = path.dirname(__filename);
 const BOT_ROOT = path.resolve(__dirname, '../../');
 const PENDING_JOBS_FILE = path.join(BOT_ROOT, 'pending_jobs.json');
 const RUNNING_FILE = path.join(BOT_ROOT, 'bot_is_running.txt');
-const STATUS_CHANNEL_ID = process.env.STATUS_CHANNEL_ID || '1569163794628739123';
-const NOTIFICATION_CHANNEL_ID = process.env.NOTIFICATION_CHANNEL_ID || '1569355374845235344';
+const STATUS_CHANNEL_ID = process.env.STATUS_CHANNEL_ID as string;
+const NOTIFICATION_CHANNEL_ID = process.env.NOTIFICATION_CHANNEL_ID as string;
+const REMINDER_CHANNEL_ID = process.env.REMINDER_CHANNEL_ID as string;
+const HERMES_DB_PATH = path.join(os.homedir(), '.hermes', 'state.db');
 
 async function setChannelName(client: Client, channelId: string, name: string): Promise<void> {
   try {
@@ -21,6 +26,23 @@ async function setChannelName(client: Client, channelId: string, name: string): 
     }
   } catch (err) {
     console.error(`Failed to update channel ${channelId}:`, err);
+  }
+}
+
+async function getLastSessionTitle(): Promise<string | null> {
+  try {
+    const db = await open({
+      filename: HERMES_DB_PATH,
+      driver: sqlite3.Database,
+    });
+    const row = await db.get(
+      `SELECT title FROM sessions WHERE archived = 0 AND ended_at IS NOT NULL ORDER BY last_activity_at DESC LIMIT 1`
+    );
+    await db.close();
+    return row?.title || null;
+  } catch (err) {
+    console.error('Error reading Hermes session title:', err);
+    return null;
   }
 }
 
@@ -113,7 +135,7 @@ async function run() {
       const durationSeconds = ((endTime - startTime) / 1000).toFixed(2);
 
       // Header
-      let header = `💼 **Jobs found today**\\nProcessing time: ${durationSeconds}s\\n\\n`;
+      let header = `💼 Jobs found today\nProcessing time: ${durationSeconds}s\n\n`;
       
       const chunks: string[] = [];
       let currentChunk = header;
@@ -137,11 +159,11 @@ async function run() {
         const link = job.link || '#';
         
         // Plain text link instead of Markdown link
-        const jobBlock = `${rank}. **${title} @ ${company}**\\n` +
-                         `${workType} | ${location}\\n` +
-                         `Score: ${score}\\n` +
-                         `Summary: ${description}\\n` +
-                         `Link: ${link}\\n\\n`;
+        const jobBlock = `${rank}. ${title} @ ${company}\n` +
+                         `${workType} | ${location}\n` +
+                         `Score: ${score}\n` +
+                         `Summary: ${description}\n` +
+                         `Link: ${link}\n\n`;
 
         if ((currentChunk + jobBlock).length > 1900) {
           chunks.push(currentChunk);
@@ -163,6 +185,25 @@ async function run() {
 
       await fs.unlink(PENDING_JOBS_FILE);
       console.log('🧹 Cleaned up pending_jobs.json');
+
+      // Send session title to reminders channel if notifications are on
+      if (notificationsEnabled) {
+        try {
+          const sessionTitle = await getLastSessionTitle();
+          const reminderMsg = sessionTitle
+            ? `🔔 Session complete\n\nTitle: ${sessionTitle}`
+            : `🔔 Job messenger session complete`;
+          const reminderChannel = await client.channels.fetch(REMINDER_CHANNEL_ID) as TextChannel | null;
+          if (reminderChannel) {
+            await reminderChannel.send(reminderMsg);
+            console.log('✅ Reminder sent to Discord.');
+          } else {
+            console.log('⚠️ Reminder channel not found, skipping reminder.');
+          }
+        } catch (err) {
+          console.error('❌ Error sending reminder:', err);
+        }
+      }
 
       // Reset status back to online
       await setChannelName(client, STATUS_CHANNEL_ID, '🟢 Hermes status: online');

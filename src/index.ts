@@ -4,6 +4,7 @@ import axios from 'axios';
 import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
+import * as http from 'http';
 import sqlite3 from 'sqlite3';
 import { open } from 'sqlite';
 import { fileURLToPath } from 'url';
@@ -49,7 +50,71 @@ function saveSettings(settings: Settings): void {
 }
 
 let settings = loadSettings();
-// ---------------------------
+// --- Notification Helpers ---
+const REMINDER_CHANNEL_ID = process.env.REMINDER_CHANNEL_ID as string;
+
+async function sendToReminderChannel(title: string, description: string, color: number): Promise<void> {
+  try {
+    const settings = loadSettings();
+    if (!settings.notificationsEnabled) return;
+
+    const channel = await client.channels.fetch(REMINDER_CHANNEL_ID);
+    if (!channel || !channel.isTextBased()) return;
+
+    const embed = new EmbedBuilder()
+      .setTitle(title)
+      .setDescription(description)
+      .setColor(color);
+
+    const textChannel = channel as { send: (opts: { embeds: EmbedBuilder[] }) => Promise<any> };
+    await textChannel.send({ embeds: [embed] });
+  } catch (err) {
+    console.error('Error sending to reminder channel:', err);
+  }
+}
+
+async function sendSessionNotification(sessionId: string): Promise<void> {
+  try {
+    const dbPath = path.join(
+      process.env.HERMES_HOME || path.join(os.homedir(), '.hermes'),
+      'state.db'
+    );
+    if (!fs.existsSync(dbPath)) return;
+
+    const db = await open({
+      filename: dbPath,
+      driver: sqlite3.Database,
+    });
+
+    const session = await db.get(
+      `SELECT title FROM sessions WHERE id = ?`,
+      [sessionId]
+    );
+    await db.close();
+
+    if (!session) return;
+
+    const title = session.title || `Untitled session #${sessionId}`;
+    const desc = `**Title:** ${title}\n**Status:** Completed`;
+
+    await sendToReminderChannel('🔔 Session complete', desc, 0x00ff00);
+    console.log(`✅ Session complete notification sent: ${title}`);
+  } catch (err) {
+    console.error('Error sending session notification:', err);
+  }
+}
+
+async function sendStartNotification(sessionId: string, title: string | null): Promise<void> {
+  try {
+    const displayTitle = title || `Untitled session #${sessionId}`;
+    const desc = `**Title:** ${displayTitle}\n**Status:** Running`;
+
+    await sendToReminderChannel('🚀 Session running', desc, 0x0088ff);
+    console.log(`✅ Session running notification sent: ${displayTitle}`);
+  } catch (err) {
+    console.error('Error sending start notification:', err);
+  }
+}
 
 const LOCAL_AI_ENDPOINT = process.env.LOCAL_AI_ENDPOINT as string;
 const LOCAL_AI_MODEL = process.env.LOCAL_AI_MODEL as string;
@@ -403,8 +468,9 @@ client.on('messageCreate', async (message) => {
   }
 });
 
-// Handle graceful shutdown: remove running file and update channel
+// Handle graceful shutdown: remove running file, update channel, stop webhook server
 const cleanup = () => {
+  server.close();
   try {
     if (fs.existsSync(RUNNING_FILE)) {
       fs.unlinkSync(RUNNING_FILE);
@@ -417,5 +483,65 @@ const cleanup = () => {
 
 process.on('SIGINT', cleanup);
 process.on('SIGTERM', cleanup);
+
+// --- Session lifecycle HTTP endpoints (called by Hermes outbound webhooks) ---
+const WEBHOOK_PORT = parseInt(process.env.WEBHOOK_PORT || '3001', 10);
+const server = http.createServer(async (req, res) => {
+  if (req.method === 'POST' && req.url === '/session-start') {
+    let body = '';
+    req.on('data', (chunk) => { body += chunk; });
+    req.on('end', async () => {
+      try {
+        const payload = JSON.parse(body);
+        const sessionId = payload.session_id;
+        const title = payload.title || null;
+        if (!sessionId) {
+          res.writeHead(400, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ error: 'Missing session_id' }));
+          return;
+        }
+        console.log(`📩 Session-start webhook received: ${sessionId} — ${title || 'untitled'}`);
+        await sendStartNotification(sessionId, title);
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ status: 'ok' }));
+      } catch (err) {
+        console.error('Error processing webhook:', err);
+        res.writeHead(400, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: 'Bad request' }));
+      }
+    });
+    return;
+  }
+  if (req.method === 'POST' && req.url === '/session-end') {
+    let body = '';
+    req.on('data', (chunk) => { body += chunk; });
+    req.on('end', async () => {
+      try {
+        const payload = JSON.parse(body);
+        const sessionId = payload.session_id;
+        if (!sessionId) {
+          res.writeHead(400, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ error: 'Missing session_id' }));
+          return;
+        }
+        console.log(`📩 Session-end webhook received: ${sessionId}`);
+        await sendSessionNotification(sessionId);
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ status: 'ok' }));
+      } catch (err) {
+        console.error('Error processing webhook:', err);
+        res.writeHead(400, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: 'Bad request' }));
+      }
+    });
+    return;
+  }
+  res.writeHead(404);
+  res.end();
+});
+
+server.listen(WEBHOOK_PORT, () => {
+  console.log(`📡 Webhook listener on port ${WEBHOOK_PORT}`);
+});
 
 client.login(DISCORD_TOKEN);
