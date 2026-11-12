@@ -1,94 +1,58 @@
-# Hermes Discord Bot
+# discord-hermes-bot
 
-Node.js bot for my Discord server. Connects the Hermes agent to Discord.
+My Discord bot. Connects the Hermes agent to my server.
 
-**AI Model:** Qwen 3.6-35B-A3B on Mac Mini M6 32GB
+Runs on my Mac Mini M6 32GB using Qwen 3.6-35B-A3B as the AI model.
 
-## What it does
+## What it actually does
 
-1. **Thread routing** — listens on `TARGET_CHANNEL_ID`, classifies messages with AI, creates threads
-2. **AI chat** — replies to @mentions via local LLM
-3. **Session notifications** — receives webhooks from Hermes on session start/end, posts embeds to reminder channel
-4. **Job messenger** — standalone process that reads `pending_jobs.json` (written by Hermes agent) and posts job listings
+- Listens on one channel, looks at messages, classifies them and creates threads based on topic
+- When I @mention it, calls my local AI and replies with the answer
+- Gets told by Hermes (via webhook) when a session starts/ends, posts a little message in my reminder channel
+- Separately, runs a job scraper that pulls from DuckDuckGo, ranks listings with AI, posts to Discord
 
-## How Hermes talks to the bot
+## How Hermes and the bot talk
 
-Two paths:
+Two ways:
 
-### File handoff (jobs)
-```
-Hermes agent (job-researcher skill)
-       |
-       v writes
-pending_jobs.json
-       |
-       v read + delete
-runJob.ts
-       |
-       v post
-Discord channel
-```
+**Jobs** — Hermes writes `pending_jobs.json`, the bot reads it and deletes it. One-way file drop.
 
-### Webhooks (sessions)
-```
-Hermes agent
-       |
-       v POST /session-start  or  POST /session-end
-Bot HTTP server (localhost:3001)
-       |
-       v send embed
-Discord reminder channel
-```
+**Sessions** — Hermes POSTs to the bot's server on port 3001 (`/session-start`, `/session-end`). Bot sends embed to Discord.
 
-## Project structure
+## Structure
 
 ```
 src/
-├── index.ts              # Main bot — Discord client + webhook server
-├── deploy-commands.ts    # Registers slash commands
+├── index.ts              # Main bot — handles Discord + webhook server on port 3001
+├── deploy-commands.ts    # Registers /notifications and /hermes-status
 ├── jobs/
-│   ├── runJob.ts         # Job messenger (standalone process)
-│   └── jobService.ts     # Scrapes DuckDuckGo, ranks with AI
+│   ├── runJob.ts         # Job scraper (separate process, has its own Discord client)
+│   └── jobService.ts     # DuckDuckGo scraping + AI ranking
 ├── config/
-│   └── settings.json     # { "notificationsEnabled": true }
+│   └── settings.json     # stores notificationsEnabled: true/false
 └── utils/
-    ├── reportTask.ts     # CLI task report
-    └── auto_configure.ts # Interactive setup wizard
+    ├── reportTask.ts     # CLI helper
+    └── auto_configure.ts # setup wizard (don't need this anymore tbh)
 ```
 
-## Environment variables
+## Environment
 
-All in `.env` (see `.env.example` for structure):
+Everything in `.env`. `LOCAL_AI_ENDPOINT` is my Mac Mini, `LOCAL_AI_MODEL` is the Qwen model name.
 
-| Variable | Used by | Purpose |
-|----------|---------|---------|
-| `DISCORD_TOKEN` | both | Bot authentication |
-| `CLIENT_ID` | deploy-commands.ts | Discord app ID |
-| `GUILD_ID` | deploy-commands.ts | Server ID |
-| `LOCAL_AI_ENDPOINT` | both | e.g. `http://127.0.0.1:60597/v1` |
-| `LOCAL_AI_MODEL` | both | Model name |
-| `TARGET_CHANNEL_ID` | index.ts | Channel to monitor for messages |
-| `DAILY_JOBS_CHANNEL_ID` | runJob.ts | Channel for job reports |
-| `STATUS_CHANNEL_ID` | runJob.ts | Voice channel for status display |
-| `NOTIFICATION_CHANNEL_ID` | runJob.ts | Voice channel for notification status |
-| `REMINDER_CHANNEL_ID` | both | Channel for session reminders |
+The Discord token and channel IDs are straightforward — there's a target channel for messages, a jobs channel, three voice channels for status, and a reminder channel.
 
-## Commands
+## Running it
 
-| Command | Description |
-|---------|-------------|
-| `npm run build` | Compile TypeScript |
-| `npm start` | Run main bot |
-| `npm run dev` | Run main bot with hot reload (tsx) |
-| `npm run job-search` | Run job messenger manually |
-| `npm run deploy` | Register slash commands |
-| `npm run report-task` | CLI task report |
+- `npm run dev` — development, hot reload with tsx
+- `npm start` — production, compiled JS
+- `npm run job-search` — manually trigger a job run
+- `npm run deploy` — register slash commands (once)
 
-## Notes
+## Stuff to remember
 
-- `pending_jobs.json` is gitignored — handoff file between Hermes agent and bot
-- `bot_is_running.txt` is a lock file to prevent double-runs
-- `settings.json` persists notification toggle state
-- `src/threads.json` stores thread ID mappings
-- Bot webhooks run on hardcoded port 3001 — configure Hermes outbound webhook accordingly
-- `runJob.ts` has its own Discord client (separate process from main bot)
+- `pending_jobs.json` is the handoff from Hermes — gitignored, transient
+- `bot_is_running.txt` is a lock so the job scraper doesn't run twice
+- `src/threads.json` maps topic names to thread IDs
+- Port 3001 is hardcoded for webhooks — make sure Hermes points there
+- The job messenger and main bot are two separate processes, each with their own Discord client
+- `/notifications` toggles session alerts on/off, `/hermes-status` shows active sessions
