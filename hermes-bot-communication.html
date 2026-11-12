@@ -1,0 +1,135 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <style>
+    body {
+      font-family: 'JetBrains Mono', 'SF Mono', monospace;
+      font-size: 14px;
+      background: #0d1117;
+      color: #c9d1d9;
+      padding: 32px;
+      line-height: 1.6;
+    }
+    pre {
+      background: #161b22;
+      border: 1px solid #30363d;
+      border-radius: 8px;
+      padding: 24px;
+      overflow-x: auto;
+      font-size: 13px;
+      line-height: 1.5;
+    }
+    .title {
+      font-size: 20px;
+      font-weight: 600;
+      color: #58a6ff;
+      margin-bottom: 8px;
+    }
+    .subtitle {
+      color: #8b949e;
+      margin-bottom: 24px;
+    }
+    .label { color: #58a6ff; }
+    .action { color: #7ee787; }
+    .data { color: #d2a8ff; }
+    .note { color: #8b949e; font-style: italic; }
+    .highlight { color: #ffa657; }
+    .red { color: #f85149; }
+  </style>
+</head>
+<body>
+  <div class="title">Hermes ↔ Discord Bot Communication</div>
+  <div class="subtitle">How your agent and bot talk — two paths, one goal</div>
+
+  <pre><span class="highlight">═══════════════════════════════════════════════════════════════════════
+ PATH 1: File-based handoff (Job Reports)
+═══════════════════════════════════════════════════════════════════════</span>
+
+  <span class="label">┌──────────────────────┐</span>           <span class="highlight">pending_jobs.json</span>           <span class="label">┌──────────────────────┐</span>
+  <span class="label">│                      │</span> ────────►  <span class="data">[JSON array of jobs]</span>  ────────►  <span class="label">│                      │</span>
+  <span class="label">│                      │</span>   write               (shared file)         <span class="label">│                      │</span>
+  <span class="label">│   <span class="action">Hermes Agent</span>       │</span>           <span class="note">(only one at a time)</span>          <span class="label">│  <span class="action">Job Messenger</span>     │</span>
+  <span class="label">│                      │</span>           <span class="note">read + delete after</span>             <span class="label">│  <span class="action">(runJob.ts)</span>         │</span>
+  <span class="label">│  job-researcher skill│</span>           <span class="red">removes the file</span>                <span class="label">│                      │</span>
+  <span class="label">│                      │</span>                                             <span class="label">│                      │</span>
+  <span class="label">└──────────────────────┘</span>                                             <span class="label">└──────────┬───────────┘</span>
+                                                                    <span class="action">│</span>
+                                                                    <span class="action">│ post to channel</span>
+                                                                    <span class="action">▼</span>
+                                                      <span class="label">┌────────────────────────────┐</span>
+                                                      <span class="label">│                          │</span>
+                                                      <span class="label">│  <span class="highlight">Discord channel</span>       │</span>
+                                                      <span class="label">│  (job listings appear)   │</span>
+                                                      <span class="label">│                          │</span>
+                                                      <span class="label">└────────────────────────────┘</span>
+
+
+  <span class="highlight">═══════════════════════════════════════════════════════════════════════
+ PATH 2: HTTP webhooks (Session Notifications)
+═══════════════════════════════════════════════════════════════════════</span>
+
+  <span class="label">┌──────────────────────┐</span>  <span class="data">POST /session-start</span>  <span class="label">┌────────────────────────────┐</span>
+  <span class="label">│                      │</span> ──────────────────►  <span class="label">│                            │</span>
+  <span class="label">│                      │</span>  <span class="data">POST /session-end</span>    <span class="label">│                            │</span>
+  <span class="label">│   <span class="action">Hermes Agent</span>       │</span>  JSON payload:        <span class="label">│  <span class="action">Bot's HTTP server</span>       │</span>
+  <span class="label">│                      │</span>  {                    <span class="label">│  <span class="action">(port 3001)</span>              │</span>
+  <span class="label">│                      │</span>  { session_id: ... }  <span class="label">│                            │</span>
+  <span class="label">│  <span class="action">outbound webhook</span>     │</span>                      <span class="label">│  intercepts POST /         │</span>
+  <span class="label">│   (configured in      │</span>                      <span class="label">│  and sends Discord embed   │</span>
+  <span class="label">│    config.yaml)        │</span>                      <span class="label">│                            │</span>
+  <span class="label">└──────────────────────┘</span>                      <span class="label">│                            │</span>
+                                                 <span class="label">│                            │</span>
+                                                 <span class="label">└───────────────┬────────────┘</span>
+                                                                 <span class="action">│</span>
+                                                                 <span class="action">│ send embed to Discord</span>
+                                                                 <span class="action">▼</span>
+                                                   <span class="label">┌────────────────────────────┐</span>
+                                                   <span class="label">│                          │</span>
+                                                   <span class="label">│  <span class="highlight">REMINDER_CHANNEL_ID</span>    │</span>
+                                                   <span class="label">│  "🚀 Session running"    │</span>
+                                                   <span class="label">│  "🔔 Session complete"   │</span>
+                                                   <span class="label">│                          │</span>
+                                                   <span class="label">└────────────────────────────┘</span>
+
+
+  <span class="highlight">═══════════════════════════════════════════════════════════════════════
+ PATH 3: Bot itself (Direct Discord API)
+═══════════════════════════════════════════════════════════════════════</span>
+
+  <span class="label">┌────────────────────────────┐</span>
+  <span class="label">│                            │</span>
+  <span class="label">│  <span class="action">Bot's Discord client</span>     │</span>
+  <span class="label">│  <span class="action">(discord.js v14)</span>        │</span>
+  <span class="label">│                            │</span>
+  <span class="label">│  Listens on:               │</span>
+  <span class="label">│  • TARGET_CHANNEL_ID       │</span>
+  <span class="label">│    → creates threads       │</span>
+  <span class="label">│    → calls LOCAL AI        │</span>
+  <span class="label">│    → replies to mentions   │</span>
+  <span class="label">│                            │</span>
+  <span class="label">│  Slash commands:           │</span>
+  <span class="label">│  • /notifications          │</span>
+  <span class="label">│  • /hermes-status          │</span>
+  <span class="label">│                            │</span>
+  <span class="label">│  Voice channels:           │</span>
+  <span class="label">│  • STATUS_CHANNEL_ID       │</span>
+  <span class="label">│    → renames to "running"  │</span>
+  <span class="label">│  • NOTIFICATION_CHANNEL_ID │</span>
+  <span class="label">│    → renames to "on/off"   │</span>
+  <span class="label">│                            │</span>
+  <span class="label">└────────────────┬───────────┘</span>
+                   <span class="action">│</span> (Discord WebSocket)
+                   <span class="action">▼</span>
+     <span class="label">┌────────────────────────────────────────────┐</span>
+     <span class="label">│                                            │</span>
+     <span class="label">│  <span class="highlight">Discord</span> — your server, all channels      │</span>
+     <span class="label">│                                            │</span>
+     <span class="label">└────────────────────────────────────────────┘</span>
+
+  <span class="note">── Key relationship ────────────────────────────────────────────
+  • Hermes calls the BOT (via webhook) — it's the SERVER
+  • Bot calls DISCORD (via API) — it's the CLIENT
+  • Hermes writes to a FILE (pending_jobs.json) — file handoff  ──</span>
+</pre>
+</body>
+</html>
